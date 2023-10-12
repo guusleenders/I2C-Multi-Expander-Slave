@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <nI2C.h>
 #include <avr/wdt.h>
+#include <EEPROM.h>
 
 /*
 TODO: 
@@ -55,6 +56,9 @@ TODO:
 #define DIGITAL_INPUT_PINS                      3
 #define DIGITAL_INPUT_FREQUENCY_PINS            2
 
+#define EEPROM_STATUS_ADDRESS                   0
+#define EEPROM_START_ADDRESS                    1
+
 const uint8_t analog_output_pins[] = {};
 const uint8_t analog_input_pins[] = {A0, A1, A2, A3};
 const uint8_t digital_output_pins[] = {9, 6, 5};
@@ -70,6 +74,7 @@ CTWI i2c;
 
 uint8_t registerMap[REGISTER_MAP_SIZE] = {0x00};
 bool registerMapUpdate = true;
+bool registerMapSettingsUpdate = false;
 uint8_t lastRegister = 0;
 uint32_t lastPollTime = 0;
 volatile uint32_t pulseCount[DIGITAL_INPUT_FREQUENCY_PINS] = {0};
@@ -82,6 +87,8 @@ void i2cReadCallback(void);
 void countFrequencyISR(void);
 void attachInterrupts(void);
 void detachInterrupts(void);
+void readEEPROM(void);
+void updateEEPROM(void);
 
 void setup() {
   // Assign slave address
@@ -91,14 +98,24 @@ void setup() {
   i2c.SetSlaveReceiveHandler(i2cWriteCallback);
   i2c.SetSlaveTransmitHandler(i2cReadCallback);
 
-  registerMap[REGISTER_SETTINGS_DEVICE_ID] = DEVICE_ID;
-  registerMap[REGISTER_SETTINGS_HARDWARE_VERSION] = HARDWARE_VERSION;
-  registerMap[REGISTER_SETTINGS_FIRMWARE_VERSION] = FIRMWARE_VERSION;
-  registerMap[REGISTER_SETTINGS_POLLING_TIME] = DEFAULT_POLLING_TIME;
-  registerMap[REGISTER_SETTINGS_DEBOUNCE_TIME] = DEFAULT_DEBOUNCE_TIME;
-  registerMap[REGISTER_SETTINGS_PWM_FREQUENCY] = DEFAULT_PWM_FREQUENCY;
-  registerMap[REGISTER_SETTINGS_FREQUENCY_COUNTER_TIME] = DEFAULT_FREQUENCY_COUNTER_TIME;
-  registerMap[REGISTER_SETTINGS_FREQUENCY_DETECTION] = DEFAULT_FREQUENCY_DETECTION;
+  // Load config from EEPROM
+  
+  if(EEPROM.read(EEPROM_STATUS_ADDRESS) == 1){
+    readEEPROM();
+  }else{
+    registerMap[REGISTER_SETTINGS_DEVICE_ID] = DEVICE_ID;
+    registerMap[REGISTER_SETTINGS_HARDWARE_VERSION] = HARDWARE_VERSION;
+    registerMap[REGISTER_SETTINGS_FIRMWARE_VERSION] = FIRMWARE_VERSION;
+    registerMap[REGISTER_SETTINGS_POLLING_TIME] = DEFAULT_POLLING_TIME;
+    registerMap[REGISTER_SETTINGS_DEBOUNCE_TIME] = DEFAULT_DEBOUNCE_TIME;
+    registerMap[REGISTER_SETTINGS_PWM_FREQUENCY] = DEFAULT_PWM_FREQUENCY;
+    registerMap[REGISTER_SETTINGS_FREQUENCY_COUNTER_TIME] = DEFAULT_FREQUENCY_COUNTER_TIME;
+    registerMap[REGISTER_SETTINGS_FREQUENCY_DETECTION] = DEFAULT_FREQUENCY_DETECTION;
+
+    updateEEPROM();
+  }
+
+  
   
   
   // Analog pins do not need init
@@ -122,7 +139,7 @@ void setup() {
 
 void loop() {
   wdt_reset();
-  
+
   if(registerMapUpdate){
     // Go over outputs to put them in the right state
 
@@ -136,8 +153,11 @@ void loop() {
       
       analogWrite(digital_output_pins[pin], registerMap[reg]);
     }
-
     registerMapUpdate = false;
+  }
+
+  if(registerMapSettingsUpdate){
+    updateEEPROM();
   }
 
   if(millis() - lastPollTime > registerMap[REGISTER_SETTINGS_POLLING_TIME]){
@@ -181,6 +201,19 @@ void loop() {
   }
 }
 
+void readEEPROM(){
+  for(uint8_t reg = REGISTER_START_SETTINGS; reg < REGISTER_END_SETTINGS; reg++){
+    registerMap[reg] = EEPROM.read(reg - REGISTER_START_SETTINGS + EEPROM_START_ADDRESS);
+  }
+}
+
+void updateEEPROM(){
+  EEPROM.update(EEPROM_STATUS_ADDRESS, 1);
+  for(uint8_t reg = REGISTER_START_SETTINGS; reg < REGISTER_END_SETTINGS; reg++){
+    EEPROM.update(reg - REGISTER_START_SETTINGS + EEPROM_START_ADDRESS, registerMap[reg]);
+  }
+}
+
 void attachInterrupts(){
   for(uint8_t pin = 0; pin < DIGITAL_INPUT_FREQUENCY_PINS; pin++){
     attachInterrupt(digitalPinToInterrupt(digital_input_frequency_pins[pin]), countFrequencyISR, CHANGE);
@@ -203,6 +236,10 @@ void i2cWriteCallback(const uint8_t data[], const uint8_t length){
     if(length > 1){
       memcpy(&registerMap[lastRegister], &data[1], length-1);
       registerMapUpdate = true;
+      // Refresh EEPROM when we wrote things to settings registers
+      if(lastRegister < REGISTER_END_SETTINGS || lastRegister + length < REGISTER_END_SETTINGS ){
+        registerMapSettingsUpdate = true;
+      }
     }
   }
   attachInterrupts();
