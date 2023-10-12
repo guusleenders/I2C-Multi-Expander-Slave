@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <nI2C.h>
+#include <avr/wdt.h>
 
 /*
 TODO: 
@@ -79,6 +80,8 @@ uint32_t lastFrequencyTime = 0;
 void i2cWriteCallback(const uint8_t data[], const uint8_t length);
 void i2cReadCallback(void);
 void countFrequencyISR(void);
+void attachInterrupts(void);
+void detachInterrupts(void);
 
 void setup() {
   // Assign slave address
@@ -114,10 +117,12 @@ void setup() {
   }
   lastFrequencyTime = millis();
 
-  Serial.begin(9600);
+  wdt_enable(WDTO_1S);
 }
 
 void loop() {
+  wdt_reset();
+  
   if(registerMapUpdate){
     // Go over outputs to put them in the right state
 
@@ -176,8 +181,20 @@ void loop() {
   }
 }
 
+void attachInterrupts(){
+  for(uint8_t pin = 0; pin < DIGITAL_INPUT_FREQUENCY_PINS; pin++){
+    attachInterrupt(digitalPinToInterrupt(digital_input_frequency_pins[pin]), countFrequencyISR, CHANGE);
+  }
+}
+
+void detachInterrupts(){
+  for(uint8_t pin = 0; pin < DIGITAL_INPUT_FREQUENCY_PINS; pin++){
+    detachInterrupt(digitalPinToInterrupt(digital_input_frequency_pins[pin]));
+  }
+}
+
 void i2cWriteCallback(const uint8_t data[], const uint8_t length){
-  noInterrupts();
+  detachInterrupts();
   if(data[0] < REGISTER_MAP_SIZE){
     // Buffer this register so we can answer to a read request later
     lastRegister = data[0];
@@ -188,33 +205,26 @@ void i2cWriteCallback(const uint8_t data[], const uint8_t length){
       registerMapUpdate = true;
     }
   }
-  interrupts();
+  attachInterrupts();
 }
 
 void i2cReadCallback(void){
   // Send message to master
-  noInterrupts();
+  detachInterrupts();
+
   uint8_t size = REGISTER_RESPONSE_SIZE; 
   if(lastRegister + REGISTER_RESPONSE_SIZE > REGISTER_MAP_SIZE){
     size = REGISTER_MAP_SIZE - lastRegister;
   } 
-  registerMap[0x50] = 2;
-  registerMap[0x51] = 4;
-  registerMap[0x52] = 3;
-  // Some weird thing is happening: first register is two times in here (bug?)
-  i2c.SlaveQueueNonBlocking(registerMap + lastRegister - 1, size);
-  Serial.print(lastRegister, HEX);
-  Serial.print(" ");
-  Serial.print(size);
-  Serial.print(" ");
-  Serial.print(registerMap[lastRegister]);
-  Serial.print(registerMap[lastRegister+1]);
-  Serial.println(registerMap[lastRegister+2]);
-  interrupts();
+
+  i2c.SlaveQueueNonBlocking(registerMap + lastRegister, size);
+
+  attachInterrupts();
 }
 
 void countFrequencyISR(void){
-  noInterrupts();
+  detachInterrupts();
+
   for(uint8_t pin = 0; pin < DIGITAL_INPUT_FREQUENCY_PINS; pin++){
     bool stateNow = digitalRead(digital_input_frequency_pins[pin]);
     // Rising edge detection
@@ -233,5 +243,6 @@ void countFrequencyISR(void){
     }
     pulseState[pin] = stateNow;
   }
-  interrupts();
+
+  attachInterrupts();
 }
